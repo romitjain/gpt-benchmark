@@ -333,24 +333,24 @@ def decode_one_token(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sam
     return sample(logits, **sampling_kwargs)
 
 def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, temperature, top_k, max_new_tokens, device):
-    assert output_toks > 0 and output_toks < max_new_tokens, f'Output tokens should be between 1 and {max_new_tokens}'
+    assert output_toks > 0 and output_toks <= max_new_tokens, f'Output tokens should be between 1 and {max_new_tokens}'
 
     with torch.no_grad():
         x = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
         prompt_len = x.shape[1]
 
-        start_time = time.time()
         all_toks = []
 
+        start_time = time.time()
         input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
         first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
+        ttft = time.time() - start_time
+
         all_toks.extend(first_token.clone()[0])
-
         prev_token = first_token.clone()
-
         input_pos = torch.tensor([prompt_len], device=device)
-        # pdb.set_trace()
 
+        start_time = time.time()
         for i in range(output_toks):
             next_token, _ = decode_one_token(
                 model,
@@ -365,12 +365,12 @@ def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, t
             input_pos += 1
 
         end_time = time.time()
+        throughput = i / (end_time - start_time)
         print('---------------')
-        print(f"total time: {end_time - start_time:.2f} seconds, generation speed: {i / (end_time - start_time):.2f} tokens/second")
+        print(f"total time: {end_time - start_time:.2f} seconds, generation speed: {throughput:.2f} tokens/second")
         all_toks = [a.tolist() for a in all_toks]
-        all_toks = tokenizer.decode(all_toks)
 
-        return all_toks
+        return ttft, throughput
 
 
 def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, profiling, device='cuda:0'):
@@ -407,13 +407,16 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, profiling
     with torch.no_grad():
 
         for kdx in range(num_samples):
-            start_time = time.time()
+            all_toks = []
+
             input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
             first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
 
             prev_token = first_token.clone()
+            all_toks.extend(first_token.clone()[0])
 
             input_pos = torch.tensor([prompt_len], device=device)
+            start_time = time.time()
 
             for i in range(max_new_tokens):
                 next_token, _ = decode_one_token(
@@ -424,12 +427,14 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, profiling
                     top_k=top_k
                 )
 
+                all_toks.extend(next_token.clone()[0])
                 prev_token = next_token.clone()
                 input_pos += 1
 
             end_time = time.time()
             print('---------------')
-            print(f"{kdx}, total time: {end_time - start_time:.2f} seconds, generation speed: {i / (end_time - start_time):.2f} tokens/second")
+            print(f"{kdx}, total time: {end_time - start_time:.2f} seconds, toks: {i} generation speed: {i / (end_time - start_time):.2f} tokens/second")
+            all_toks = [a.tolist() for a in all_toks]
 
     if profiling:
         input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
@@ -502,7 +507,7 @@ def main():
         device=torch.device(args.device)
     )
 
-    out = gen(prompt=args.prompt, output_toks=256)
+    out = gen(prompt=args.prompt, output_toks=100)
     print(out)
 
 if __name__ == '__main__':
