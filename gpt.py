@@ -329,11 +329,10 @@ def prefill(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwa
 
 def decode_one_token(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     assert input_pos.shape[-1] == 1
-    with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-        logits = model(x, input_pos)
+    logits = model(x, input_pos)
     return sample(logits, **sampling_kwargs)
 
-def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, temperature, top_k, max_new_tokens, device, profile=False):
+def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, temperature, top_k, max_new_tokens, device):
     assert output_toks > 0 and output_toks < max_new_tokens, f'Output tokens should be between 1 and {max_new_tokens}'
 
     with torch.no_grad():
@@ -345,7 +344,7 @@ def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, t
 
         input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
         first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
-        # all_toks.extend(first_token.clone()[0].tolist())
+        all_toks.extend(first_token.clone()[0])
 
         prev_token = first_token.clone()
 
@@ -360,7 +359,7 @@ def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, t
                 temperature=temperature,
                 top_k=top_k
             )
-            # all_toks.extend(next_token.clone()[0].tolist())
+            all_toks.extend(next_token.clone()[0])
 
             prev_token = next_token.clone()
             input_pos += 1
@@ -368,35 +367,13 @@ def generate(prompt, output_toks, model, prefill, decode_one_token, tokenizer, t
         end_time = time.time()
         print('---------------')
         print(f"total time: {end_time - start_time:.2f} seconds, generation speed: {i / (end_time - start_time):.2f} tokens/second")
+        all_toks = [a.tolist() for a in all_toks]
+        all_toks = tokenizer.decode(all_toks)
 
-    if args.profile:
-        input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
-        with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            with_stack=True
-        ) as prof:
-            with torch.no_grad():
-                with record_function("prefill"):
-                    first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
-                    prev_token = first_token.clone()
-
-                with record_function("decode"):
-                    input_pos = torch.tensor([prompt_len], device=device)
-                    for _ in range(max_new_tokens):
-                        next_token, _ = decode_one_token(
-                            model,
-                            prev_token,
-                            input_pos,
-                            temperature=temperature,
-                            top_k=top_k
-                        )
-                        prev_token = next_token.clone()
-                        input_pos += 1
-
-        prof.export_chrome_trace(f"trace_compile_{args.compile}.json")
+        return all_toks
 
 
-def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, device='cuda:0'):
+def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, profiling, device='cuda:0'):
     assert model in ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], 'Only gpt2 models are supported'
 
     tokenizer = AutoTokenizer.from_pretrained(model)
@@ -421,23 +398,22 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, device='c
         decode_one_token = torch.compile(decode_one_token, mode="reduce-overhead", fullgraph=True)
         prefill = torch.compile(prefill, dynamic=True, fullgraph=True)
 
+    x = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
+    prompt_len = x.shape[1]
+
+    print(f"Length of prompt: {prompt_len}")
+
     # run generation
     with torch.no_grad():
-        x = tokenizer(prompt, return_tensors='pt').input_ids.to(device)
-        prompt_len = x.shape[1]
 
         for kdx in range(num_samples):
             start_time = time.time()
-            all_toks = []
             input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
-
             first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
-            # all_toks.extend(first_token.clone()[0].tolist())
 
             prev_token = first_token.clone()
 
             input_pos = torch.tensor([prompt_len], device=device)
-            # pdb.set_trace()
 
             for i in range(max_new_tokens):
                 next_token, _ = decode_one_token(
@@ -447,7 +423,6 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, device='c
                     temperature=temperature,
                     top_k=top_k
                 )
-                # all_toks.extend(next_token.clone()[0].tolist())
 
                 prev_token = next_token.clone()
                 input_pos += 1
@@ -455,6 +430,34 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, device='c
             end_time = time.time()
             print('---------------')
             print(f"{kdx}, total time: {end_time - start_time:.2f} seconds, generation speed: {i / (end_time - start_time):.2f} tokens/second")
+
+    if profiling:
+        input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            with_stack=True
+        ) as prof:
+            with torch.no_grad():
+                with record_function("prefill"):
+                    first_token = prefill(model, x, input_pos, temperature=temperature, top_k=top_k)
+                    prev_token = first_token.clone()
+
+                with record_function("decode"):
+                    input_pos = torch.tensor([prompt_len], device=device)
+                    for _ in range(max_new_tokens):
+                        next_token, _ = decode_one_token(
+                            model,
+                            prev_token,
+                            input_pos,
+                            temperature=temperature,
+                            top_k=top_k
+                        )
+                        prev_token = next_token.clone()
+                        input_pos += 1
+
+        prof.export_chrome_trace(f"profiling/trace_compile_{compile}.json")
+
+    # pdb.set_trace()
 
     return partial(
         generate,
@@ -465,22 +468,26 @@ def warmup(model, prompt, max_new_tokens, temperature, top_k, compile, device='c
         temperature=temperature,
         top_k=top_k,
         max_new_tokens=max_new_tokens,
+        device=device
     )
 
 def parse_args():
     parser = ArgumentParser()
     parser.add_argument('--model', type=str, default='gpt2')
+    parser.add_argument('--prompt', type=str, default='the capital of france is ')
     parser.add_argument('--temperature', type=float, default=0.4)
     parser.add_argument('--top_k', type=int, default=50)
-    parser.add_argument('--num_samples', type=int, default=10)
     parser.add_argument('--max_new_tokens', type=int, default=100)
-    parser.add_argument('--prompt', type=str, default='the capital of france is ')
+    parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--compile', action='store_true', default=False)
-    parser.add_argument('--profile', action='store_true', default=False)
+    parser.add_argument('--profiling', action='store_true', default=False)
 
     return parser.parse_args()
 
 def main():
+    """
+    python gpt.py --model gpt2 --prompt 'the capital of france is ' --temperature 0.4 --top_k 50 --max_new_tokens 1000 --compile --profiling
+    """
     args = parse_args()
     print(args)
 
@@ -491,8 +498,12 @@ def main():
         temperature=args.temperature,
         top_k=args.top_k,
         compile=args.compile,
-        device=args.device
+        profiling=args.profiling,
+        device=torch.device(args.device)
     )
+
+    out = gen(prompt=args.prompt, output_toks=256)
+    print(out)
 
 if __name__ == '__main__':
     main()
