@@ -1,16 +1,17 @@
 import os
-os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import torch
 import argparse
 import pandas as pd
+from copy import copy
 from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm import LLM, SamplingParams
 
 import gpt
 
-device = 'cuda:0'
+device = "cuda:0"
 
 @dataclass
 class Metrics:
@@ -20,71 +21,79 @@ class Metrics:
     ttft: list[float] = field(default_factory=list)
     throughput: list[float] = field(default_factory=list)
 
+
 class BenchmarkResults:
-    def __init__(self): 
+    def __init__(self):
         self.gpt_metrics = Metrics()
         self.hf_metrics = Metrics()
         self.vllm_metrics = Metrics()
         self.tgi_metrics = Metrics()
 
-def benchmark_vllm(
-        model,
-        prompt,
-        sampling_params
-    ):
+
+def benchmark_vllm(model, prompt, runs, sampling_params):
+    ttfts = []
+    throughputs = []
+
     with torch.no_grad():
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-    
-        start_event.record()
-        out = model.generate(
-            prompt,
-            sampling_params=sampling_params
-        )
-        end_event.record()
-        torch.cuda.synchronize()
+        for r in range(runs):
+            out = model.generate(prompt, sampling_params=sampling_params)
+            if r != 0:
+                ttfts.append(out[0].metrics.first_token_time-out[0].metrics.first_scheduled_time)
+                decoding_time = out[0].metrics.finished_time-out[0].metrics.first_token_time
+                decoding_tokens = len(out[0].outputs[0].token_ids)
+                throughputs.append(decoding_time/decoding_tokens)
 
-        print(out.shape)
-        inference_time = start_event.elapsed_time(end_event) / 1000.0
+    return sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
 
-    return (out.shape[-1]-prompt.shape[-1])/inference_time
 
 def benchmark_tgi():
     pass
 
-def benchmark_hf(
-        model,
-        tokenizer,
-        prompt,
-        max_new_tokens
-    ):
+
+def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
+    ttfts = []
+    throughputs = []
+    prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids.to('cuda')
+
     with torch.no_grad():
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
+        for r in range(runs):
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
 
-        start_event.record()
-        outputs = model(prompt)
-        end_event.record()
-        torch.cuda.synchronize()
+            start_event.record()
+            outputs = model(prompt_tokens)
+            end_event.record()
+            torch.cuda.synchronize()
 
-        import pdb; pdb.set_trace()
+            first_tok, _ = gpt.sample(
+                outputs.logits[:,-1,:],
+                temperature=model.generation_config.temperature,
+                top_k=model.generation_config.top_k
+            )
 
-        ttft = start_event.elapsed_time(end_event) / 1000.0
+            ttft = start_event.elapsed_time(end_event) / 1000.0
 
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
+            new_prompt_tokens = torch.hstack((prompt_tokens, first_tok.unsqueeze(0)))
 
-        out = model.generate(
-            prompt+tokenizer.decode(outputs[-1]),
-            max_new_tokens=max_new_tokens,
-        )
-        end_event.record()
-        torch.cuda.synchronize()
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
 
-        print(out.shape)
-        inference_time = start_event.elapsed_time(end_event) / 1000.0
+            start_event.record()
+            out = model.generate(
+                new_prompt_tokens,
+                max_new_tokens=max_new_tokens,
+            )
+            end_event.record()
+            torch.cuda.synchronize()
 
-    return ttft, (out.shape[-1]-prompt.shape[-1])/inference_time
+            inference_time = start_event.elapsed_time(end_event) / 1000.0
+            throughput = (out.shape[-1] - prompt_tokens.shape[-1]) / inference_time
+
+            if r != 0:
+                ttfts.append(ttft)
+                throughputs.append(throughput)
+
+    return sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
 
 
 def parse_args():
@@ -96,17 +105,18 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda:0")
     return parser.parse_args()
 
-def main():
+
+def bench():
     args = parse_args()
 
-    with open('long_prompt.txt', 'r') as f:
+    with open("long_prompt.txt", "r") as f:
         prompt = f.read()
 
-    num_paras = prompt.count('\n\n')
+    num_paras = prompt.count("\n\n")
     print(f"Number of paragraphs: {num_paras}")
 
     tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
-    prompt_tokens = tokenizer(prompt, return_tensors='pt')
+    prompt_tokens = tokenizer(prompt, return_tensors="pt")
     warmup_tokens = prompt_tokens.input_ids[0, :512]
     warmup_prompt = tokenizer.decode(warmup_tokens)
     warmup_tokens = warmup_tokens.unsqueeze(0).to(device)
@@ -125,13 +135,13 @@ def main():
     # hf_model.eval()
     # hf_model = torch.compile(hf_model)
 
-    # for _ in range(5):
-    #     with torch.no_grad():
-    #         _ = hf_model.generate(
-    #             warmup_tokens,
-    #             max_new_tokens=512,
-    #             do_sample=True
-    #         )
+    # with torch.no_grad():
+    #     _ = hf_model(warmup_tokens)
+    #     _ = hf_model.generate(
+    #         warmup_tokens,
+    #         max_new_tokens=512,
+    #         do_sample=True
+    #     )
 
     # ## vLLM
     # print('Loading vLLM model...')
@@ -142,21 +152,21 @@ def main():
     #     device=device,
     #     dtype=torch.bfloat16
     # )
-    # for _ in range(5):
-    #     with torch.no_grad():
+    # with torch.no_grad():
+    #     for _ in range(5):
     #         _ = vllm_model.generate(warmup_prompt, sampling_params=sampling_params)
 
     ## Custom GPT
-    print('Loading Custom GPT model...')
+    print("Loading Custom GPT model...")
     gpt_gen = gpt.warmup(
         model=args.model,
-        prompt=warmup_prompt,
+        prompt=copy(warmup_prompt),
         max_new_tokens=512,
         temperature=args.temperature,
         top_k=args.top_k,
         compile=True,
         profiling=False,
-        device=device
+        device=device,
     )
 
     bench_results = BenchmarkResults()
@@ -164,50 +174,82 @@ def main():
     # input_toks are variable, output_toks are fixed
     input_toks_range = [16, 32, 64, 128, 256, 512]
     output_toks = 512
+    runs = 5
+
+    sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
 
     for input_toks in input_toks_range:
         fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
+        print(f"Running GPT benchmark for input tokens: {input_toks}, output tokens: {output_toks}")
 
-        for _ in range(10):
-            print(f'Running GPT benchmark for input tokens: {input_toks}, output tokens: {output_toks}')
+        # ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
 
-            ttft, throughput = gpt_gen(prompt=fixed_prompt, output_toks=256)
+        # bench_results.hf_metrics.bs.append(args.batch_size)
+        # bench_results.hf_metrics.input_toks.append(input_toks)
+        # bench_results.hf_metrics.output_toks.append(output_toks)
+        # bench_results.hf_metrics.ttft.append(ttft)
+        # bench_results.hf_metrics.throughput.append(throughput)
 
-            bench_results.gpt_metrics.bs.append(args.batch_size)
-            bench_results.gpt_metrics.input_toks.append(input_toks)
-            bench_results.gpt_metrics.output_toks.append(output_toks)
-            bench_results.gpt_metrics.ttft.append(ttft)
-            bench_results.gpt_metrics.throughput.append(throughput)
+        # ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
-            # throughput = benchmark_hf(
-            #     hf_model,
-            #     tokenizer,
-            #     fixed_prompt,
-            #     output_toks
-            # )
+        # bench_results.vllm_metrics.bs.append(args.batch_size)
+        # bench_results.vllm_metrics.input_toks.append(input_toks)
+        # bench_results.vllm_metrics.output_toks.append(output_toks)
+        # bench_results.vllm_metrics.ttft.append(ttft)
+        # bench_results.vllm_metrics.throughput.append(throughput)
 
-            # bench_results.hf_metrics.bs.append(args.batch_size)
-            # bench_results.hf_metrics.input_toks.append(input_toks)
-            # bench_results.hf_metrics.output_toks.append(output_toks)
-            # bench_results.hf_metrics.throughput.append(throughput)
+        ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
 
-            # sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
+        bench_results.gpt_metrics.bs.append(args.batch_size)
+        bench_results.gpt_metrics.input_toks.append(input_toks)
+        bench_results.gpt_metrics.output_toks.append(output_toks)
+        bench_results.gpt_metrics.ttft.append(ttft)
+        bench_results.gpt_metrics.throughput.append(throughput)
 
-            # throughput = benchmark_vllm(
-            #     vllm_model,
-            #     fixed_prompt,
-            #     sampling_params
-            # )
+    input_toks = 128
+    output_toks_range = [16, 32, 64, 128, 256, 512]
+    fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
 
-            # bench_results.vllm_metrics.bs.append(args.batch_size)
-            # bench_results.vllm_metrics.input_toks.append(input_toks)
-            # bench_results.vllm_metrics.output_toks.append(output_toks)
-            # bench_results.vllm_metrics.throughput.append(throughput)
+    for output_toks in output_toks_range:
+        print(f"Running GPT benchmark for input tokens: {input_toks}, output tokens: {output_toks}")
 
-    import pdb; pdb.set_trace()
-    bench_df = pd.DataFrame(bench_results)
-    print(bench_df)
-    bench_df.to_csv('benchmark_results.csv', index=False)
+        # ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
+
+        # bench_results.hf_metrics.bs.append(args.batch_size)
+        # bench_results.hf_metrics.input_toks.append(input_toks)
+        # bench_results.hf_metrics.output_toks.append(output_toks)
+        # bench_results.hf_metrics.ttft.append(ttft)
+        # bench_results.hf_metrics.throughput.append(throughput)
+
+        # sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
+        # ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
+
+        # bench_results.vllm_metrics.bs.append(args.batch_size)
+        # bench_results.vllm_metrics.input_toks.append(input_toks)
+        # bench_results.vllm_metrics.output_toks.append(output_toks)
+        # bench_results.vllm_metrics.ttft.append(ttft)
+        # bench_results.vllm_metrics.throughput.append(throughput)
+
+        ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
+
+        bench_results.gpt_metrics.bs.append(args.batch_size)
+        bench_results.gpt_metrics.input_toks.append(input_toks)
+        bench_results.gpt_metrics.output_toks.append(output_toks)
+        bench_results.gpt_metrics.ttft.append(ttft)
+        bench_results.gpt_metrics.throughput.append(throughput)
+
+    gpt_df = pd.DataFrame(asdict(bench_results.gpt_metrics))
+    gpt_df["model"] = "gpt"
+
+    hf_df = pd.DataFrame(asdict(bench_results.hf_metrics))
+    hf_df["model"] = "hf"
+
+    vllm_df = pd.DataFrame(asdict(bench_results.vllm_metrics))
+    vllm_df["model"] = "vllm"
+
+    results_df = pd.concat([gpt_df, hf_df, vllm_df], ignore_index=True)
+    print(results_df)
+    results_df.to_csv('results.csv', index=False)
 
 if __name__ == "__main__":
-    main()
+    bench()
