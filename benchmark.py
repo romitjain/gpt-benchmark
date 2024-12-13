@@ -3,8 +3,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import torch
 import argparse
 import pandas as pd
-from copy import copy
-from typing import Optional
+import matplotlib.pyplot as plt
 from dataclasses import dataclass, field, asdict
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from vllm import LLM, SamplingParams
@@ -20,7 +19,7 @@ class Metrics:
     output_toks: list[int] = field(default_factory=list)
     ttft: list[float] = field(default_factory=list)
     throughput: list[float] = field(default_factory=list)
-
+    subset: list[str] = field(default_factory=list)
 
 class BenchmarkResults:
     def __init__(self):
@@ -176,8 +175,8 @@ def bench():
     bench_results = BenchmarkResults()
 
     # input_toks are variable, output_toks are fixed
-    input_toks_range = [16, 32, 64, 128, 256, 512]
-    output_toks = 512
+    input_toks_range = [i for i in range(16, 992, 16)]
+    output_toks = 32
     runs = 5
 
     sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
@@ -193,6 +192,7 @@ def bench():
         bench_results.hf_metrics.output_toks.append(output_toks)
         bench_results.hf_metrics.ttft.append(ttft)
         bench_results.hf_metrics.throughput.append(throughput)
+        bench_results.hf_metrics.subset.append("ttft")
 
         ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
 
@@ -201,6 +201,7 @@ def bench():
         bench_results.gpt_metrics.output_toks.append(output_toks)
         bench_results.gpt_metrics.ttft.append(ttft)
         bench_results.gpt_metrics.throughput.append(throughput)
+        bench_results.gpt_metrics.subset.append("ttft")
 
         ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
@@ -209,11 +210,11 @@ def bench():
         bench_results.vllm_metrics.output_toks.append(output_toks)
         bench_results.vllm_metrics.ttft.append(ttft)
         bench_results.vllm_metrics.throughput.append(throughput)
-
+        bench_results.vllm_metrics.subset.append("ttft")
 
     # input toks are fixed, output toks are variable
     input_toks = 32
-    output_toks_range = [16, 32, 64, 128, 256, 512, 992]
+    output_toks_range = [i for i in range(16, 992, 16)]
     fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
 
     for output_toks in output_toks_range:
@@ -226,7 +227,7 @@ def bench():
         bench_results.hf_metrics.output_toks.append(output_toks)
         bench_results.hf_metrics.ttft.append(ttft)
         bench_results.hf_metrics.throughput.append(throughput)
-
+        bench_results.hf_metrics.subset.append("throughput")
         ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
 
         bench_results.gpt_metrics.bs.append(args.batch_size)
@@ -234,6 +235,7 @@ def bench():
         bench_results.gpt_metrics.output_toks.append(output_toks)
         bench_results.gpt_metrics.ttft.append(ttft)
         bench_results.gpt_metrics.throughput.append(throughput)
+        bench_results.gpt_metrics.subset.append("throughput")
 
         sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
         ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
@@ -243,6 +245,7 @@ def bench():
         bench_results.vllm_metrics.output_toks.append(output_toks)
         bench_results.vllm_metrics.ttft.append(ttft)
         bench_results.vllm_metrics.throughput.append(throughput)
+        bench_results.vllm_metrics.subset.append("throughput")
 
     gpt_df = pd.DataFrame(asdict(bench_results.gpt_metrics))
     gpt_df["model"] = "gpt"
@@ -257,5 +260,41 @@ def bench():
     print(results_df)
     results_df.to_csv('results.csv', index=False)
 
+    return results_df
+
+def plot_results(df):
+    plt.figure(figsize=(15, 10))
+
+    plt.subplot(1, 2, 1)
+    for model in df[df['subset'] == 'ttft']['model'].unique():
+        model_data = df[(df['subset'] == 'ttft') & (df['model'] == model)]
+        plt.plot(model_data['input_toks'], model_data['ttft'], marker='o', label=model)
+
+    plt.title('Time to First Token (TTFT) by Input Tokens (BS = 1, output tokens = 32)', fontsize=14)
+    plt.xlabel('Input Tokens', fontsize=12)
+    plt.ylabel('Time to First Token (ms)', fontsize=12)
+    plt.legend()
+    plt.grid(True, which="both", ls="-", alpha=0.2)
+
+    plt.subplot(1, 2, 2)
+    df.loc[:, 'throughput'] = df['throughput'].apply(lambda x: 4000 if x > 4000 else x)
+
+    for model in df[df['subset'] == 'throughput']['model'].unique():
+        model_data = df[(df['subset'] == 'throughput') & (df['model'] == model)]
+        # Clip values above 4000
+        plt.plot(model_data['output_toks'], model_data['throughput'], marker='o', label=model)
+
+    plt.title('Throughput by Output Tokens (BS = 1, input tokens = 32)', fontsize=14)
+    plt.xlabel('Output Tokens', fontsize=12)
+    plt.ylabel('Throughput (tokens/s) (Values above 4000 are clipped)', fontsize=12)
+    plt.legend()
+    plt.grid(True, which="both", ls="-", alpha=0.2)
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig('performance_plots.png', dpi=300)
+    plt.show()
+
 if __name__ == "__main__":
-    bench()
+    df = bench()
+    plot_results(df)

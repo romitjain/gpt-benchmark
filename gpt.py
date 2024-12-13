@@ -378,11 +378,11 @@ def prefill_and_decode(
             all_toks = [a.tolist() for a in all_toks]
             all_toks = tokenizer.decode(all_toks)
 
-            # print("---------------")
-            # print(
-            #     f"{r}: total time: {end_time - start_time:.2f} seconds, ttft: {ttft}, generation speed: {throughput:.2f} tokens/second"
-            # )
-            # print(f"Text: {all_toks}")
+            print("---------------")
+            print(
+                f"{r}: total time: {end_time - start_time:.2f} seconds, ttft: {ttft}, generation speed: {throughput:.2f} tokens/second"
+            )
+            print(f"Text: {all_toks}")
 
             if r != 0:
                 ttfts.append(ttft)
