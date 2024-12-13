@@ -388,7 +388,7 @@ def prefill_and_decode(
                 ttfts.append(ttft)
                 throughputs.append(throughput)
 
-    return sum(ttfts) / len(ttfts), sum(throughputs) / len(throughputs)
+    return 1000*sum(ttfts) / len(ttfts), sum(throughputs) / len(throughputs)
 
 
 def warmup(

@@ -43,7 +43,7 @@ def benchmark_vllm(model, prompt, runs, sampling_params):
                 decoding_tokens = len(out[0].outputs[0].token_ids)
                 throughputs.append(decoding_tokens/decoding_time)
 
-    return sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
+    return 1000*sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
 
 
 def benchmark_tgi():
@@ -53,7 +53,8 @@ def benchmark_tgi():
 def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
     ttfts = []
     throughputs = []
-    prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids.to('cuda')
+    prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+    attention_mask = tokenizer(prompt, return_tensors="pt").attention_mask.to(device)
 
     with torch.no_grad():
         for r in range(runs):
@@ -74,13 +75,14 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
             ttft = start_event.elapsed_time(end_event) / 1000.0
 
             new_prompt_tokens = torch.hstack((prompt_tokens, first_tok.unsqueeze(0)))
+            new_mask_tokens = torch.hstack((attention_mask, torch.ones((1, 1), device=device)))
 
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
 
             start_event.record()
             out = model.generate(
-                new_prompt_tokens,
+                **{'input_ids': new_prompt_tokens, 'attention_mask': new_mask_tokens},
                 max_new_tokens=max_new_tokens,
             )
             end_event.record()
@@ -93,7 +95,7 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
                 ttfts.append(ttft)
                 throughputs.append(throughput)
 
-    return sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
+    return 1000*sum(ttfts)/len(ttfts), sum(throughputs)/len(throughputs)
 
 
 def parse_args():
@@ -121,6 +123,7 @@ def bench():
     warmup_prompt = tokenizer.decode(warmup_tokens)
     warmup_prompt_copy = tokenizer.decode(warmup_tokens)
     warmup_tokens = warmup_tokens.unsqueeze(0).to(device)
+    warmup_mask = prompt_tokens.attention_mask[:, :512].to(device)
 
     ## HF
     print('Loading HF model...')
@@ -139,7 +142,7 @@ def bench():
     with torch.no_grad():
         _ = hf_model(warmup_tokens)
         _ = hf_model.generate(
-            warmup_tokens,
+            **{'input_ids': warmup_tokens, 'attention_mask': warmup_mask},
             max_new_tokens=512,
             do_sample=True
         )
@@ -209,8 +212,8 @@ def bench():
 
 
     # input toks are fixed, output toks are variable
-    input_toks = 128
-    output_toks_range = [16, 32, 64, 128, 256, 512]
+    input_toks = 32
+    output_toks_range = [16, 32, 64, 128, 256, 512, 992]
     fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
 
     for output_toks in output_toks_range:
