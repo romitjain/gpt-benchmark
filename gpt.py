@@ -25,6 +25,10 @@ from functools import partial
 from typing import Optional, Tuple
 from argparse import ArgumentParser
 
+torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n

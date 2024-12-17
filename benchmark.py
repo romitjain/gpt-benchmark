@@ -10,8 +10,6 @@ from vllm import LLM, SamplingParams
 
 import gpt
 
-device = "cuda:0"
-
 @dataclass
 class Metrics:
     bs: list[int] = field(default_factory=list)
@@ -109,6 +107,11 @@ def parse_args():
 
 def bench():
     args = parse_args()
+    global device
+    device = args.device
+    # Set the environment variable to specify the GPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device.split(":")[1]
+    print(f"Using GPU: {args.device}, {os.environ['CUDA_VISIBLE_DEVICES']}")
 
     with open("long_prompt.txt", "r") as f:
         prompt = f.read()
