@@ -64,8 +64,8 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
 
             start_event.record()
             outputs = model(prompt_tokens)
-            torch.cuda.synchronize()
             end_event.record()
+            end_event.synchronize()
 
             first_tok, _ = gpt.sample(
                 outputs.logits[:,-1,:],
@@ -86,8 +86,8 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
                 **{'input_ids': new_prompt_tokens, 'attention_mask': new_mask_tokens},
                 max_new_tokens=max_new_tokens,
             )
-            torch.cuda.synchronize()
             end_event.record()
+            end_event.synchronize()
 
             inference_time = start_event.elapsed_time(end_event) / 1000.0
             throughput = (out.shape[-1] - prompt_tokens.shape[-1]) / inference_time

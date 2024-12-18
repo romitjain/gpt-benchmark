@@ -1,9 +1,10 @@
 import torch
 import flashinfer
 import triton
-import triton.language as tl
 from typing import Optional
 from torch.profiler import profile, record_function, ProfilerActivity
+
+from src.fused_sampling import fused_softmax_sampling
 
 torch.library.define(
     "flashinfer::sampling",
@@ -33,15 +34,12 @@ def torch_sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
 
 def flash_sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     logits = logits / max(temperature, 1e-5)
+    out = torch.zeros(logits.shape[-1], device=logits.device).to(dtype=torch.int32)
 
     if top_k is not None:
-        # logits = torch.ops.flashinfer.sampling(logits, top_k)
-        logits = flashinfer.sampling.top_k_mask_logits(logits, top_k)
+        logits = torch.ops.flashinfer.sampling(logits, top_k)
 
-    probs = torch.nn.functional.softmax(logits, dim=-1)
-
-    q = torch.empty_like(probs).exponential_(1)
-    return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int)
+    return fused_softmax_sampling(logits, out)
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -70,7 +68,7 @@ def benchmark(B, N, provider):
     print(f'bench for {B, N, provider}')
 
     if provider == 'flash':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: flash_sample(x, 0.5, 10), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: flash_sample(x, 0.5, top_k), quantiles=quantiles)
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_sample(x, 0.5, 10), quantiles=quantiles)
 
@@ -99,27 +97,28 @@ if __name__ == "__main__":
 
     benchmark.run(show_plots=True, print_data=True)
 
+    logits = torch.randn(1, 50000).to("cuda")
+    top_k = torch.tensor([10], dtype=torch.int32, device='cuda')
+
     if args.profiling:
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            with_stack=True
+            # with_stack=True
         ) as prof:
-            logits = torch.randn(1, 50000).to("cuda")
             with torch.no_grad():
                 with record_function("sampling"):
                     for _ in range(5):
-                        _, _ = torch_sample(logits, 0.5, 10)
+                        _ = torch_sample(logits, 0.5, 10)
 
         prof.export_chrome_trace(f"torch_sample_{args.compile}.json")
 
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            with_stack=True
+            # with_stack=True
         ) as prof:
-            logits = torch.randn(1, 50000).to("cuda")
             with torch.no_grad():
                 with record_function("sampling"):
                     for _ in range(5):
-                        _, _ = flash_sample(logits, 0.5, 10)
+                        _ = flash_sample(logits, 0.5, top_k)
 
         prof.export_chrome_trace(f"flash_sample_{args.compile}.json")
