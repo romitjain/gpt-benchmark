@@ -3,9 +3,6 @@ torch
 torchaudio
 transformers
 pydantic
-fastapi
-pydantic
 numpy
-pyloudnorm~=0.1
-python-multipart
-openai
+matplotlib
+# flashinfer

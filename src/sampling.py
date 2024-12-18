@@ -1,71 +1,125 @@
 import torch
+import flashinfer
 import triton
 import triton.language as tl
+from typing import Optional
+from torch.profiler import profile, record_function, ProfilerActivity
 
-@triton.jit
-def fused_topk_softmax_sampling_kernel(
-    logits_ptr,
-    input_batch_stride,
-    output_ptr,
-    output_batch_stride,
-    temp,
-    top_k,
-    vocab_size,
-    BLOCK_SIZE: tl.constexpr
-):
-    batch_idx = tl.program_id(0)
-    block_start = batch_idx * input_batch_stride
-    offsets = tl.arange(0, BLOCK_SIZE)
+torch.library.define(
+    "flashinfer::sampling",
+    "(Tensor logits, Tensor top_k) -> Tensor",
+)
 
-    # Load logits
-    logits = tl.load(logits_ptr + block_start + offsets, mask=offsets < vocab_size, other=-float("inf"))
+@torch.library.impl("flashinfer::sampling", "cuda")
+def custom_func(logits, top_k):
+    return flashinfer.sampling.top_k_mask_logits(logits, top_k)
 
-    # Temperature scaling
-    logits = tl.div_rn(logits, temp)
+@torch.library.register_fake("flashinfer::sampling")
+def custom_func_abstract(logits, top_k):
+    return torch.empty_like(logits)
 
-    # Top-K selection
-    # TODO: Implement fused top-k selection
+def torch_sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    logits = logits / max(temperature, 1e-5)
 
-    # Softmax
-    logits = logits - tl.max(logits, axis=0)
+    if top_k is not None:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        pivot = v.select(-1, -1).unsqueeze(-1)
+        logits = torch.where(logits < pivot, -float("Inf"), logits)
 
-    exp_logits = tl.exp(logits)
-    probs = exp_logits / tl.sum(exp_logits, axis=0)
+    probs = torch.nn.functional.softmax(logits, dim=-1)
 
-    # Sampling
-    cumulative_sum = tl.cumsum(probs, axis=0)
-    rand = tl.rand()
+    q = torch.empty_like(probs).exponential_(1)
+    return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
-    # Find the first cumulative sum bin that exceeds U
-    sampled_index = tl.where(cumulative_sum >= rand, offsets, vocab_size)
-    sampled_index = tl.min(sampled_index, axis=0)  # Find the first index
+def flash_sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
+    logits = logits / max(temperature, 1e-5)
 
-    if offsets[0] == 0:
-        tl.store(output_ptr + batch_idx * output_batch_stride, sampled_index)
+    if top_k is not None:
+        # logits = torch.ops.flashinfer.sampling(logits, top_k)
+        logits = flashinfer.sampling.top_k_mask_logits(logits, top_k)
 
-def fused_topk_softmax_sampling(
-    logits: torch.Tensor,
-    temperature: float,
-    top_k: int,
-):
-    """
-    This function performs the sampling operation using fused kernels.
-    """
-    assert logits.is_contiguous(), "Logits must be contiguous"
-    assert logits.device.type == "cuda", "Logits must be on CUDA"
-    assert logits.ndim == 2, "Logits must be 2D, (batch_size, vocab_size)"
+    probs = torch.nn.functional.softmax(logits, dim=-1)
 
-    B, V = logits.shape
-    out = torch.empty((B, 1), device=logits.device, dtype=torch.int32)
+    q = torch.empty_like(probs).exponential_(1)
+    return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
-    grid = (B, )
-    BLOCK_SIZE = triton.next_power_of_2(V)
+@triton.testing.perf_report(
+    triton.testing.Benchmark(
+        x_names=['N'],
+        x_vals=[4 ** i for i in range(2, 9)],
+        line_arg='provider',
+        line_vals=[
+            'flash',
+            'torch',
+        ],
+        line_names=[
+            "Flash",
+            "Torch (native)",
+        ],
+        styles=[('blue', '-'), ('green', '-')],
+        ylabel="GB/s",
+        plot_name="Performance",
+        args={'B': 1},
+    ))
+def benchmark(B, N, provider):
+    x = torch.randn(B, N, device='cuda:0', dtype=torch.float16)
+    top_k = torch.tensor([10], dtype=torch.int32, device='cuda')
 
-    fused_topk_softmax_sampling_kernel[grid](
-        logits, logits.stride(0),
-        out, out.stride(0),
-        max(temperature, 1e-5), top_k, V,
-        BLOCK_SIZE=BLOCK_SIZE
-    )
+    quantiles = [0.5, 0.2, 0.8]
 
-    return out
+    print(f'bench for {B, N, provider}')
+
+    if provider == 'flash':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: flash_sample(x, 0.5, 10), quantiles=quantiles)
+    if provider == 'torch':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_sample(x, 0.5, 10), quantiles=quantiles)
+
+    def gbps(ms): return 2 * x.nelement() * x.element_size() * 1e-9 / (ms * 1e-3)
+
+    return gbps(ms), gbps(max_ms), gbps(min_ms)
+    # return ms, min_ms, max_ms
+
+def compile_fn():
+    global torch_sample
+    global flash_sample
+
+    torch_sample = torch.compile(torch_sample, mode="reduce-overhead", fullgraph=True)
+    flash_sample = torch.compile(flash_sample, mode="reduce-overhead", fullgraph=True)
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    parser.add_argument("--compile", action="store_true")
+    parser.add_argument("--profiling", action="store_true")
+    args = parser.parse_args()
+
+    if args.compile:
+        compile_fn()
+
+    benchmark.run(show_plots=True, print_data=True)
+
+    if args.profiling:
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            with_stack=True
+        ) as prof:
+            logits = torch.randn(1, 50000).to("cuda")
+            with torch.no_grad():
+                with record_function("sampling"):
+                    for _ in range(5):
+                        _, _ = torch_sample(logits, 0.5, 10)
+
+        prof.export_chrome_trace(f"torch_sample_{args.compile}.json")
+
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            with_stack=True
+        ) as prof:
+            logits = torch.randn(1, 50000).to("cuda")
+            with torch.no_grad():
+                with record_function("sampling"):
+                    for _ in range(5):
+                        _, _ = flash_sample(logits, 0.5, 10)
+
+        prof.export_chrome_trace(f"flash_sample_{args.compile}.json")

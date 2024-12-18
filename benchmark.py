@@ -10,6 +10,10 @@ from vllm import LLM, SamplingParams
 
 import gpt
 
+torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 @dataclass
 class Metrics:
     bs: list[int] = field(default_factory=list)
@@ -136,7 +140,7 @@ def bench():
     ).to(device=device)
 
     hf_model.generation_config.temperature = args.temperature
-    hf_model.generation_config.top_k = args.top_k
+    # hf_model.generation_config.top_k = args.top_k
 
     hf_model.eval()
     hf_model = torch.compile(hf_model)
@@ -164,7 +168,7 @@ def bench():
 
     ## vLLM
     print('Loading vLLM model...')
-    sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=512)
+    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=512)#, top_k=args.top_k)
     vllm_model = LLM(
         "openai-community/gpt2",
         gpu_memory_utilization=0.25,
@@ -178,11 +182,11 @@ def bench():
     bench_results = BenchmarkResults()
 
     # input_toks are variable, output_toks are fixed
-    input_toks_range = [i for i in range(16, 992, 16)]
+    input_toks_range = [i for i in range(16, 992, 64)]
     output_toks = 32
     runs = 5
 
-    sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
+    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks)#, top_k=args.top_k)
 
     for input_toks in input_toks_range:
         fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
@@ -217,7 +221,7 @@ def bench():
 
     # input toks are fixed, output toks are variable
     input_toks = 32
-    output_toks_range = [i for i in range(16, 992, 16)]
+    output_toks_range = [i for i in range(16, 992, 64)]
     fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
 
     for output_toks in output_toks_range:
@@ -240,7 +244,7 @@ def bench():
         bench_results.gpt_metrics.throughput.append(throughput)
         bench_results.gpt_metrics.subset.append("throughput")
 
-        sampling_params = SamplingParams(temperature=args.temperature, top_k=args.top_k, max_tokens=output_toks)
+        sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks)#, top_k=args.top_k)
         ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
         bench_results.vllm_metrics.bs.append(args.batch_size)

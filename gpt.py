@@ -25,10 +25,6 @@ from functools import partial
 from typing import Optional, Tuple
 from argparse import ArgumentParser
 
-torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
@@ -317,10 +313,10 @@ def multinomial_sample_one_no_sync(probs_sort):
 def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     logits = logits / max(temperature, 1e-5)
 
-    if top_k is not None:
-        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-        pivot = v.select(-1, -1).unsqueeze(-1)
-        logits = torch.where(logits < pivot, -float("Inf"), logits)
+    # if top_k is not None:
+    #     v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+    #     pivot = v.select(-1, -1).unsqueeze(-1)
+    #     logits = torch.where(logits < pivot, -float("Inf"), logits)
     probs = torch.nn.functional.softmax(logits, dim=-1)
     return probs
 

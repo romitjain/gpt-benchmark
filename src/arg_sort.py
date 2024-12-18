@@ -145,7 +145,7 @@ def argsort_triton(x):
 @triton.testing.perf_report(
     triton.testing.Benchmark(
         x_names=['N'],
-        x_vals=[4 ** i for i in range(2, 8)],
+        x_vals=[4 ** i for i in range(2, 7)],
         line_arg='provider',
         line_vals=[
             'triton',
@@ -167,9 +167,9 @@ def benchmark(B, N, provider):
     print(f'bench for {B, N, provider}')
 
     if provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: argsort_triton(x), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: argsort_triton(x), quantiles=quantiles, warmup=5, rep=20)
     if provider == 'torch':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.sort(x, 1, False), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.sort(x, 1, False), quantiles=quantiles, warmup=5, rep=20)
 
     def gbps(ms): return 2 * x.nelement() * x.element_size() * 1e-9 / (ms * 1e-3)
 
@@ -177,7 +177,7 @@ def benchmark(B, N, provider):
 
 if __name__ == '__main__':
 
-    x = torch.randn((1, 2048), dtype=torch.float16, device='cuda')
+    x = torch.randn((1, 4096), dtype=torch.float16, device='cuda')
     o, ids = argsort_triton(x)
 
     print('result: ')
