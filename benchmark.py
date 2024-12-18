@@ -64,8 +64,8 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
 
             start_event.record()
             outputs = model(prompt_tokens)
-            end_event.record()
             torch.cuda.synchronize()
+            end_event.record()
 
             first_tok, _ = gpt.sample(
                 outputs.logits[:,-1,:],
@@ -86,8 +86,8 @@ def benchmark_hf(model, tokenizer, prompt, runs, max_new_tokens):
                 **{'input_ids': new_prompt_tokens, 'attention_mask': new_mask_tokens},
                 max_new_tokens=max_new_tokens,
             )
-            end_event.record()
             torch.cuda.synchronize()
+            end_event.record()
 
             inference_time = start_event.elapsed_time(end_event) / 1000.0
             throughput = (out.shape[-1] - prompt_tokens.shape[-1]) / inference_time
@@ -140,7 +140,7 @@ def bench():
     ).to(device=device)
 
     hf_model.generation_config.temperature = args.temperature
-    # hf_model.generation_config.top_k = args.top_k
+    hf_model.generation_config.top_k = args.top_k
 
     hf_model.eval()
     hf_model = torch.compile(hf_model)
@@ -168,7 +168,7 @@ def bench():
 
     ## vLLM
     print('Loading vLLM model...')
-    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=512)#, top_k=args.top_k)
+    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=512, top_k=args.top_k)
     vllm_model = LLM(
         "openai-community/gpt2",
         gpu_memory_utilization=0.25,
@@ -182,11 +182,11 @@ def bench():
     bench_results = BenchmarkResults()
 
     # input_toks are variable, output_toks are fixed
-    input_toks_range = [i for i in range(16, 992, 64)]
+    input_toks_range = [i for i in range(16, 992, 32)]
     output_toks = 32
     runs = 5
 
-    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks)#, top_k=args.top_k)
+    sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks, top_k=args.top_k)
 
     for input_toks in input_toks_range:
         fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
@@ -221,7 +221,7 @@ def bench():
 
     # input toks are fixed, output toks are variable
     input_toks = 32
-    output_toks_range = [i for i in range(16, 992, 64)]
+    output_toks_range = [i for i in range(16, 992, 32)]
     fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
 
     for output_toks in output_toks_range:
@@ -244,7 +244,7 @@ def bench():
         bench_results.gpt_metrics.throughput.append(throughput)
         bench_results.gpt_metrics.subset.append("throughput")
 
-        sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks)#, top_k=args.top_k)
+        sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks, top_k=args.top_k)
         ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
         bench_results.vllm_metrics.bs.append(args.batch_size)

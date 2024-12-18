@@ -313,10 +313,10 @@ def multinomial_sample_one_no_sync(probs_sort):
 def logits_to_probs(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     logits = logits / max(temperature, 1e-5)
 
-    # if top_k is not None:
-    #     v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-    #     pivot = v.select(-1, -1).unsqueeze(-1)
-    #     logits = torch.where(logits < pivot, -float("Inf"), logits)
+    if top_k is not None:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        pivot = v.select(-1, -1).unsqueeze(-1)
+        logits = torch.where(logits < pivot, -float("Inf"), logits)
     probs = torch.nn.functional.softmax(logits, dim=-1)
     return probs
 
@@ -378,11 +378,11 @@ def prefill_and_decode(
             all_toks = [a.tolist() for a in all_toks]
             all_toks = tokenizer.decode(all_toks)
 
-            print("---------------")
-            print(
-                f"{r}: total time: {end_time - start_time:.2f} seconds, ttft: {ttft}, generation speed: {throughput:.2f} tokens/second"
-            )
-            print(f"Text: {all_toks}")
+            # print("---------------")
+            # print(
+            #     f"{r}: total time: {end_time - start_time:.2f} seconds, ttft: {ttft}, generation speed: {throughput:.2f} tokens/second"
+            # )
+            # print(f"Text: {all_toks}")
 
             if r != 0:
                 ttfts.append(ttft)
