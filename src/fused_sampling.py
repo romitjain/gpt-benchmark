@@ -5,6 +5,10 @@ import triton.language as tl
 
 @triton.autotune(
     configs=[
+        triton.Config({'group_sz': 2}, num_warps=2),
+        triton.Config({'group_sz': 2}, num_warps=4),
+        triton.Config({'group_sz': 2}, num_warps=8),
+        triton.Config({'group_sz': 2}, num_warps=16),
         triton.Config({'group_sz': 4}, num_warps=2),
         triton.Config({'group_sz': 4}, num_warps=4),
         triton.Config({'group_sz': 4}, num_warps=8),
@@ -24,7 +28,6 @@ def fused_softmax_sampling_kernel(
     output_batch_stride,
     vocab_size,
     exponential_ptr,
-    top_k: tl.constexpr,
     group_sz: tl.constexpr,
     BLOCK_SIZE: tl.constexpr
 ):
@@ -36,15 +39,9 @@ def fused_softmax_sampling_kernel(
     logits = tl.load(logits_ptr + block_start + offsets, mask=offsets < vocab_size, other=-float("inf"))
     expo = tl.load(exponential_ptr + block_start + offsets, mask=offsets < vocab_size, other=1)
 
-    # Topk masking
-    topk_values = tl.sort(logits, descending=True)
-    topk_threhold = topk_values[top_k]
-    topk_mask = logits >= topk_threhold
-    masked_logits = tl.where(topk_mask, logits, -float("inf"))
-
     # Softmax
-    masked_logits = masked_logits - tl.max(logits, axis=0)
-    exp_logits = tl.exp(masked_logits)
+    logits = logits - tl.max(logits, axis=0)
+    exp_logits = tl.exp(logits)
     probs = exp_logits / tl.sum(exp_logits, axis=0)
 
     # Sampling
@@ -53,7 +50,7 @@ def fused_softmax_sampling_kernel(
     tl.store(output_ptr + batch_idx * output_batch_stride, sampled_index)
 
 
-def fused_softmax_sampling(logits: torch.Tensor, out: torch.Tensor, top_k: int):
+def fused_softmax_sampling(logits: torch.Tensor, out: torch.Tensor):
     """
     This function performs the sampling operation using fused kernels.
     """
@@ -74,25 +71,20 @@ def fused_softmax_sampling(logits: torch.Tensor, out: torch.Tensor, top_k: int):
         output_batch_stride=out.stride(0),
         vocab_size=vocab,
         exponential_ptr=exponential,
-        top_k=top_k,
         BLOCK_SIZE=BLOCK_SIZE
     )
 
     return out
 
 
-def torch_sample(logits, q=None, top_k=None):
-    if top_k is not None:
-        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-        pivot = v.select(-1, -1).unsqueeze(-1)
-        logits = torch.where(logits < pivot, -float("Inf"), logits)
-
+def torch_sample(logits, q=None):
     probs = torch.nn.functional.softmax(logits, dim=-1)
 
     if q is None:
         q = torch.empty_like(probs).exponential_(1)
 
     return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int)
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -115,16 +107,15 @@ def torch_sample(logits, q=None, top_k=None):
 def benchmark(B, V, provider):
     x = torch.randn(B, V, device='cuda:0')
     out = torch.empty((B,), device=logits.device).to(dtype=torch.int32)
-    top_k = torch.tensor([10], dtype=torch.int32, device='cuda')
 
     quantiles = [0.5, 0.2, 0.8]
 
     print(f'bench for {B, V, provider}')
 
     if provider == 'triton':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_softmax_sampling(x, out, top_k), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_softmax_sampling(x, out), quantiles=quantiles)
     if provider == 'torch':
-        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_sample(x, top_k=top_k), quantiles=quantiles)
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_sample(x), quantiles=quantiles)
 
     def gbps(ms): return 2 * x.nelement() * x.element_size() * 1e-9 / (ms * 1e-3)
 
@@ -136,11 +127,9 @@ if __name__ == '__main__':
     B, V = 1, 50000
     logits = torch.randn(B, V, device='cuda:0')
     out = torch.empty((B, ), device=logits.device).to(dtype=torch.int32)
-    top_k = 10
 
-    sample_idx = fused_softmax_sampling(logits=logits, out=out, top_k=top_k)
+    sample_idx = fused_softmax_sampling(logits=logits, out=out)
     sample_torch_idx = torch_sample(logits).squeeze(-1)
 
     # assert torch.allclose(sample_idx, sample_torch_idx), f'{sample_idx}, {sample_torch_idx}'
-
-    # benchmark.run(show_plots=True, print_data=True)
+    benchmark.run(show_plots=True, print_data=True)

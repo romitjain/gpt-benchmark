@@ -1,3 +1,5 @@
+[Under maintenance]
+
 # indri-benchmark
 
 Making small indri as fast as possible
@@ -121,3 +123,9 @@ Both of these constraints apply if we are using directly using HuggingFace trans
 
 [^A1]: Prefill phase FLOPs
 [^A2]: Decode phase FLOPs
+
+
+## Failed experiments
+
+1. Sampling with custom topk kernel
+2. Sampling with flashinfer topk kernel
