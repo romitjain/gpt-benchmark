@@ -32,13 +32,16 @@ def torch_sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     q = torch.empty_like(probs).exponential_(1)
     return torch.argmax(probs / q, dim=-1, keepdim=True).to(dtype=torch.int), probs
 
-def triton_sampling(logits, out: torch.Tensor, temperature: float = 1.0, top_k: Optional[int] = None):
+def triton_sampling(logits, out: torch.Tensor = None, temperature: float = 1.0, top_k: Optional[int] = None):
     logits = logits / max(temperature, 1e-5)
 
     if top_k is not None:
         v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
         pivot = v.select(-1, -1).unsqueeze(-1)
         logits = torch.where(logits < pivot, -float("Inf"), logits)
+
+    if out is None:
+        out = torch.empty((1, ), device=logits.device)
 
     return fused_softmax_sampling(logits, out), None
 

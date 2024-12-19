@@ -54,10 +54,6 @@ def fused_softmax_sampling(logits: torch.Tensor, out: torch.Tensor):
     """
     This function performs the sampling operation using fused kernels.
     """
-    assert logits.is_contiguous(), "Logits must be contiguous"
-    assert logits.device.type == "cuda", "Logits must be on CUDA"
-    assert logits.ndim == 2, "Logits must be 2D, (batch_size, vocab_size)"
-
     batch_size, vocab = logits.shape
     exponential = torch.empty_like(logits).exponential_(1)
 
@@ -132,4 +128,4 @@ if __name__ == '__main__':
     sample_torch_idx = torch_sample(logits).squeeze(-1)
 
     # assert torch.allclose(sample_idx, sample_torch_idx), f'{sample_idx}, {sample_torch_idx}'
-    benchmark.run(show_plots=True, print_data=True)
+    # benchmark.run(show_plots=True, print_data=True)

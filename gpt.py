@@ -26,8 +26,7 @@ from typing import Optional, Tuple
 from argparse import ArgumentParser
 
 # from src.sampling import flash_sample as sample
-# from src.sampling import torch_sample as sample
-from src.sampling import triton_sampling as sample
+from src.sampling import torch_sample as sample
 
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
@@ -331,14 +330,14 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     return idx_next, probs
 """
 
-def prefill(model: GPT, x: torch.Tensor, out, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
+def prefill(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     logits = model(x, input_pos)
-    return sample(logits[:, -1], out, **sampling_kwargs)[0]
+    return sample(logits[:, -1], **sampling_kwargs)[0]
 
-def decode_one_token(model: GPT, x: torch.Tensor, out, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+def decode_one_token(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     assert input_pos.shape[-1] == 1
     logits = model(x, input_pos)
-    return sample(logits[:, -1], out, **sampling_kwargs)[0]
+    return sample(logits[:, -1], **sampling_kwargs)[0]
 
 
 def prefill_and_decode(
@@ -357,7 +356,6 @@ def prefill_and_decode(
 
     with torch.no_grad():
         for r in range(runs):
-            out = torch.empty((1, model.config.vocab_size), device=device)
             x = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
             prompt_len = x.shape[1]
 
@@ -365,7 +363,7 @@ def prefill_and_decode(
 
             start_time = time.time()
             input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
-            first_token = prefill(model, x, out, input_pos, **sampling_kwargs)
+            first_token = prefill(model, x, input_pos, **sampling_kwargs)
             ttft = time.time() - start_time
 
             all_toks.extend(first_token.clone()[0])
@@ -374,7 +372,7 @@ def prefill_and_decode(
 
             start_time = time.time()
             for i in range(output_toks):
-                next_token = decode(model, prev_token, out, input_pos, **sampling_kwargs)
+                next_token = decode(model, prev_token, input_pos, **sampling_kwargs)
                 all_toks.extend(next_token.clone()[0])
 
                 prev_token = next_token.clone()
