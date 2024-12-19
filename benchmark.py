@@ -155,6 +155,7 @@ def bench():
 
     ## Custom GPT
     print("Loading Custom GPT model...")
+    # topk = torch.tensor([args.top_k], dtype=torch.int32, device=device)
     gpt_gen = gpt.warmup(
         model=args.model,
         prompt=warmup_prompt_copy,
@@ -192,14 +193,14 @@ def bench():
         fixed_prompt = tokenizer.decode(prompt_tokens.input_ids[0, :input_toks])
         print(f"Running GPT benchmark for input tokens: {input_toks}, output tokens: {output_toks}")
 
-        ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
+        # ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
 
-        bench_results.hf_metrics.bs.append(args.batch_size)
-        bench_results.hf_metrics.input_toks.append(input_toks)
-        bench_results.hf_metrics.output_toks.append(output_toks)
-        bench_results.hf_metrics.ttft.append(ttft)
-        bench_results.hf_metrics.throughput.append(throughput)
-        bench_results.hf_metrics.subset.append("ttft")
+        # bench_results.hf_metrics.bs.append(args.batch_size)
+        # bench_results.hf_metrics.input_toks.append(input_toks)
+        # bench_results.hf_metrics.output_toks.append(output_toks)
+        # bench_results.hf_metrics.ttft.append(ttft)
+        # bench_results.hf_metrics.throughput.append(throughput)
+        # bench_results.hf_metrics.subset.append("ttft")
 
         ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
 
@@ -209,15 +210,16 @@ def bench():
         bench_results.gpt_metrics.ttft.append(ttft)
         bench_results.gpt_metrics.throughput.append(throughput)
         bench_results.gpt_metrics.subset.append("ttft")
+        print(ttft, throughput)
 
-        ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
+        # ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
-        bench_results.vllm_metrics.bs.append(args.batch_size)
-        bench_results.vllm_metrics.input_toks.append(input_toks)
-        bench_results.vllm_metrics.output_toks.append(output_toks)
-        bench_results.vllm_metrics.ttft.append(ttft)
-        bench_results.vllm_metrics.throughput.append(throughput)
-        bench_results.vllm_metrics.subset.append("ttft")
+        # bench_results.vllm_metrics.bs.append(args.batch_size)
+        # bench_results.vllm_metrics.input_toks.append(input_toks)
+        # bench_results.vllm_metrics.output_toks.append(output_toks)
+        # bench_results.vllm_metrics.ttft.append(ttft)
+        # bench_results.vllm_metrics.throughput.append(throughput)
+        # bench_results.vllm_metrics.subset.append("ttft")
 
     # input toks are fixed, output toks are variable
     input_toks = 32
@@ -227,14 +229,15 @@ def bench():
     for output_toks in output_toks_range:
         print(f"Running GPT benchmark for input tokens: {input_toks}, output tokens: {output_toks}")
 
-        ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
+        # ttft, throughput = benchmark_hf(hf_model, tokenizer, fixed_prompt, runs, output_toks)
 
-        bench_results.hf_metrics.bs.append(args.batch_size)
-        bench_results.hf_metrics.input_toks.append(input_toks)
-        bench_results.hf_metrics.output_toks.append(output_toks)
-        bench_results.hf_metrics.ttft.append(ttft)
-        bench_results.hf_metrics.throughput.append(throughput)
-        bench_results.hf_metrics.subset.append("throughput")
+        # bench_results.hf_metrics.bs.append(args.batch_size)
+        # bench_results.hf_metrics.input_toks.append(input_toks)
+        # bench_results.hf_metrics.output_toks.append(output_toks)
+        # bench_results.hf_metrics.ttft.append(ttft)
+        # bench_results.hf_metrics.throughput.append(throughput)
+        # bench_results.hf_metrics.subset.append("throughput")
+
         ttft, throughput = gpt_gen(prompt=fixed_prompt, runs=runs, output_toks=output_toks)
 
         bench_results.gpt_metrics.bs.append(args.batch_size)
@@ -243,16 +246,17 @@ def bench():
         bench_results.gpt_metrics.ttft.append(ttft)
         bench_results.gpt_metrics.throughput.append(throughput)
         bench_results.gpt_metrics.subset.append("throughput")
+        print(ttft, throughput)
 
-        sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks, top_k=args.top_k)
-        ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
+        # sampling_params = SamplingParams(temperature=args.temperature, max_tokens=output_toks, top_k=args.top_k)
+        # ttft, throughput = benchmark_vllm(vllm_model, fixed_prompt, runs, sampling_params)
 
-        bench_results.vllm_metrics.bs.append(args.batch_size)
-        bench_results.vllm_metrics.input_toks.append(input_toks)
-        bench_results.vllm_metrics.output_toks.append(output_toks)
-        bench_results.vllm_metrics.ttft.append(ttft)
-        bench_results.vllm_metrics.throughput.append(throughput)
-        bench_results.vllm_metrics.subset.append("throughput")
+        # bench_results.vllm_metrics.bs.append(args.batch_size)
+        # bench_results.vllm_metrics.input_toks.append(input_toks)
+        # bench_results.vllm_metrics.output_toks.append(output_toks)
+        # bench_results.vllm_metrics.ttft.append(ttft)
+        # bench_results.vllm_metrics.throughput.append(throughput)
+        # bench_results.vllm_metrics.subset.append("throughput")
 
     gpt_df = pd.DataFrame(asdict(bench_results.gpt_metrics))
     gpt_df["model"] = "gpt"

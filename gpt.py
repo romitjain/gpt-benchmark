@@ -25,6 +25,10 @@ from functools import partial
 from typing import Optional, Tuple
 from argparse import ArgumentParser
 
+# from src.sampling import flash_sample as sample
+# from src.sampling import torch_sample as sample
+from src.sampling import triton_sampling as sample
+
 def find_multiple(n: int, k: int) -> int:
     if n % k == 0:
         return n
@@ -305,6 +309,7 @@ class GPT(nn.Module):
 
         return model
 
+"""
 def multinomial_sample_one_no_sync(probs_sort):
     # Does multinomial sampling without a cuda synchronization
     q = torch.empty_like(probs_sort).exponential_(1)
@@ -324,15 +329,16 @@ def sample(logits, temperature: float = 1.0, top_k: Optional[int] = None):
     probs = logits_to_probs(logits[:, -1], temperature, top_k)
     idx_next = multinomial_sample_one_no_sync(probs)
     return idx_next, probs
+"""
 
-def prefill(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
+def prefill(model: GPT, x: torch.Tensor, out, input_pos: torch.Tensor, **sampling_kwargs) -> torch.Tensor:
     logits = model(x, input_pos)
-    return sample(logits, **sampling_kwargs)[0]
+    return sample(logits[:, -1], out, **sampling_kwargs)[0]
 
-def decode_one_token(model: GPT, x: torch.Tensor, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+def decode_one_token(model: GPT, x: torch.Tensor, out, input_pos: torch.Tensor, **sampling_kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     assert input_pos.shape[-1] == 1
     logits = model(x, input_pos)
-    return sample(logits, **sampling_kwargs)
+    return sample(logits[:, -1], out, **sampling_kwargs)[0]
 
 
 def prefill_and_decode(
@@ -351,6 +357,7 @@ def prefill_and_decode(
 
     with torch.no_grad():
         for r in range(runs):
+            out = torch.empty((1, model.config.vocab_size), device=device)
             x = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
             prompt_len = x.shape[1]
 
@@ -358,7 +365,7 @@ def prefill_and_decode(
 
             start_time = time.time()
             input_pos = torch.arange(0, prompt_len, dtype=torch.long, device=device)
-            first_token = prefill(model, x, input_pos, **sampling_kwargs)
+            first_token = prefill(model, x, out, input_pos, **sampling_kwargs)
             ttft = time.time() - start_time
 
             all_toks.extend(first_token.clone()[0])
@@ -367,7 +374,7 @@ def prefill_and_decode(
 
             start_time = time.time()
             for i in range(output_toks):
-                next_token, _ = decode(model, prev_token, input_pos, **sampling_kwargs)
+                next_token = decode(model, prev_token, out, input_pos, **sampling_kwargs)
                 all_toks.extend(next_token.clone()[0])
 
                 prev_token = next_token.clone()
@@ -475,7 +482,7 @@ def warmup(
                         prev_token = next_token.clone()
                         input_pos += 1
 
-        prof.export_chrome_trace(f"profiling/trace_compile_{compile}.json")
+        prof.export_chrome_trace(f"profiling/flashinfer_sample_{compile}.json")
 
     return partial(
         prefill_and_decode,
@@ -521,7 +528,7 @@ def main():
         device=torch.device(args.device),
     )
 
-    out = gen(prompt=args.prompt, runs=2, output_toks=500)
+    out = gen(prompt=args.prompt, runs=10, output_toks=500)
     print(out)
 
 
