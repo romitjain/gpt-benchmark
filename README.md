@@ -140,7 +140,7 @@ Another optimization is instead of using Static KV cache, we can implement [Page
 [^A1]: Prefill phase FLOPs
 [^A2]: Decode phase FLOPs
 [^A3]: [CUDA graph constraints](https://pytorch.org/docs/main/notes/cuda.html#constraints)
-[^A4]: [](https://github.com/huggingface/transformers/blob/main/src/transformers/generation/utils.py#L3299)
+[^A4]: [HuggingFace torch.multinomial call](https://github.com/huggingface/transformers/blob/main/src/transformers/generation/utils.py#L3299)
 [^A5]: [PyTorch multinomial sampling issue](https://github.com/pytorch/pytorch/issues/108968)
 [^A6]: [NanoGPT](https://github.com/karpathy/nanoGPT)
 [^A7]: [gpt-fast](https://github.com/pytorch-labs/gpt-fast)
