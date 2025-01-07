@@ -470,7 +470,7 @@ def warmup(
                 with record_function("decode"):
                     input_pos = torch.tensor([prompt_len], device=device)
                     for _ in range(max_new_tokens):
-                        next_token, _ = decode_one_token(
+                        next_token = decode_one_token(
                             model,
                             prev_token,
                             input_pos,
@@ -480,7 +480,7 @@ def warmup(
                         prev_token = next_token.clone()
                         input_pos += 1
 
-        prof.export_chrome_trace(f"profiling/flashinfer_sample_{compile}.json")
+        prof.export_chrome_trace(f"profiling/compile_{compile}.json")
 
     return partial(
         prefill_and_decode,
