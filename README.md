@@ -1,6 +1,6 @@
 # gpt-benchmark
 
-Making small indri as fast as possible
+Making small decoder only transformers as fast as possible
 
 This is an effort at making small models (<1B params) run as fast as possible!
 (Running models at the highest throughput possible and lowest time to fist token for the batch size of 1)
