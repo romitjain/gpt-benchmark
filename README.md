@@ -1,4 +1,4 @@
-# indri-benchmark
+# gpt-benchmark
 
 Making small indri as fast as possible
 
